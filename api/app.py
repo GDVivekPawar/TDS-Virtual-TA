@@ -4,7 +4,7 @@ import json
 import sqlite3
 import numpy as np
 import re
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Body
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
@@ -723,6 +723,71 @@ async def health_check():
             status_code=500,
             content={"status": "unhealthy", "error": str(e), "api_key_set": bool(API_KEY)}
         )
+
+
+@app.post("/api/")
+async def api_endpoint(request: Request):
+    """API endpoint that matches project requirements"""
+    body = await request.json()
+    question = body.get("question", "")
+    image = body.get("image", None)
+    
+    # Use the same logic as your /query endpoint
+    try:
+        # Use the same logic as your /query endpoint
+        if not API_KEY:
+            return {
+                "answer": "API_KEY environment variable not set",
+                "links": []
+            }
+        conn = get_db_connection()
+        try:
+            # Process the query (handle text and optional image)
+            query_embedding = await process_multimodal_query(
+                question,
+                image
+            )
+            # Find similar content
+            relevant_results = await find_similar_content(query_embedding, conn)
+            if not relevant_results:
+                return {
+                    "answer": "I couldn't find any relevant information in my knowledge base.",
+                    "links": []
+                }
+            # Enrich results with adjacent chunks for better context
+            enriched_results = await enrich_with_adjacent_chunks(conn, relevant_results)
+            # Generate answer
+            llm_response = await generate_answer(question, enriched_results)
+            # Parse the response
+            result = parse_llm_response(llm_response)
+            # If links extraction failed, create them from the relevant results
+            if not result["links"]:
+                links = []
+                unique_urls = set()
+                for res in relevant_results[:5]:
+                    url = res["url"]
+                    if url not in unique_urls:
+                        unique_urls.add(url)
+                        snippet = res["content"][:100] + "..." if len(res["content"]) > 100 else res["content"]
+                        links.append({"url": url, "text": snippet})
+                result["links"] = links
+            return {
+                "answer": result["answer"],
+                "links": result["links"]
+            }
+        except Exception as e:
+            return {
+                "answer": f"Sorry, I encountered an error: {str(e)}",
+                "links": []
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        return {
+            "answer": f"Sorry, I encountered an error: {str(e)}",
+            "links": []
+        }
+
 
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=True) 
